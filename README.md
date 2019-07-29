@@ -9,6 +9,7 @@ similar.
 mkdir -p "$(go env GOPATH)/src/bitbucket.org/luthersystems"
 cd "$(go env GOPATH)/src/bitbucket.org/luthersystems"
 git clone git@bitbucket.org:luthersystems/aws-cred-setup.git
+go get -v bitbucket.org/luthersystems/aws-cred-setup
 go install bitbucket.org/luthersystems/aws-cred-setup
 ```
 
