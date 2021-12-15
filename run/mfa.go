@@ -24,7 +24,7 @@ func userName(sess client.ConfigProvider) (string, error) {
 	arnComps := strings.Split(*identResult.Arn, ":")
 	lastArnComp := arnComps[len(arnComps)-1]
 	if !strings.HasPrefix(lastArnComp, "user/") {
-		return "", fmt.Errorf("The available credentials are for a non-user ARN: %s", *identResult.Arn)
+		return "", fmt.Errorf("available credentials are for a non-user ARN: %s", *identResult.Arn)
 	}
 	return strings.TrimPrefix(lastArnComp, "user/"), nil
 }
@@ -45,6 +45,7 @@ func serialCleaner(iamService *iam.IAM, setupError *error) func(string) {
 	}
 }
 
+// MFASetup enables MFA for the user
 func MFASetup() (err error) {
 	sess := session.Must(session.NewSession())
 	iamService := iam.New(sess)
@@ -55,7 +56,9 @@ func MFASetup() (err error) {
 		return err
 	}
 	fmt.Printf("Setting up MFA for user: %s.  Continue? <enter>", userName)
-	fmt.Scanln()
+	if _, err := fmt.Scanln(); err != nil {
+		return err
+	}
 	createInput := &iam.CreateVirtualMFADeviceInput{
 		VirtualMFADeviceName: aws.String(userName),
 	}
