@@ -13,7 +13,7 @@ This doc assumes your GOPATH is `~/go` (`go env GOPATH` returns
 ## Installation
 
 ```
-go install bitbucket.org/luthersystems/aws-cred-setup@latest
+go install github.com/luthersystems/aws-cred-setup@latest
 ```
 
 ## Usage

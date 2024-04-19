@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"bitbucket.org/luthersystems/aws-cred-setup/run"
+	"github.com/luthersystems/aws-cred-setup/run"
 	"github.com/spf13/cobra"
 )
 
