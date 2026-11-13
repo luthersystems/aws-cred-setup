@@ -29,34 +29,31 @@ func userName(sess client.ConfigProvider) (string, error) {
 	return strings.TrimPrefix(lastArnComp, "user/"), nil
 }
 
-func serialCleaner(iamService *iam.IAM, setupError *error) func(string) {
-	return func(serial string) {
-		if *setupError == nil {
-			return
-		}
-		fmt.Println("Setup incomplete, deleting unused MFA device.")
-		input := &iam.DeleteVirtualMFADeviceInput{
-			SerialNumber: aws.String(serial),
-		}
-		_, err := iamService.DeleteVirtualMFADevice(input)
-		if err != nil {
-			fmt.Printf("Failed to clean up MFA device.  Manual intervention required.  Error: %v", err)
-		}
+// deleteUnusedDevice removes an MFA device that was created but not
+// enabled, so that a failed setup does not leave a device that blocks the
+// next attempt (the device name is the user name).
+func deleteUnusedDevice(iamService *iam.IAM, serial string) {
+	fmt.Println("Setup incomplete, deleting unused MFA device.")
+	input := &iam.DeleteVirtualMFADeviceInput{
+		SerialNumber: aws.String(serial),
+	}
+	_, err := iamService.DeleteVirtualMFADevice(input)
+	if err != nil {
+		fmt.Printf("Failed to clean up MFA device.  Manual intervention required.  Error: %v", err)
 	}
 }
 
 // MFASetup enables MFA for the user
-func MFASetup() (err error) {
+func MFASetup() error {
 	sess := session.Must(session.NewSession())
 	iamService := iam.New(sess)
-	cleanup := serialCleaner(iamService, &err)
 
 	userName, err := userName(sess)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Setting up MFA for user: %s.  Continue? <enter>", userName)
-	if _, err := fmt.Scanln(); err != nil {
+	if _, err = fmt.Scanln(); err != nil {
 		return err
 	}
 	createInput := &iam.CreateVirtualMFADeviceInput{
@@ -67,9 +64,19 @@ func MFASetup() (err error) {
 		return err
 	}
 	serial := *createResult.VirtualMFADevice.SerialNumber
-	defer cleanup(serial)
 
-	seed := string(createResult.VirtualMFADevice.Base32StringSeed)
+	// From here on a failure must delete the new device.
+	if err = enroll(iamService, userName, createResult.VirtualMFADevice); err != nil {
+		deleteUnusedDevice(iamService, serial)
+		return err
+	}
+	return nil
+}
+
+// enroll shows the device's QR code, reads two codes and enables the device.
+func enroll(iamService *iam.IAM, userName string, device *iam.VirtualMFADevice) error {
+	serial := *device.SerialNumber
+	seed := string(device.Base32StringSeed)
 	qrString := fmt.Sprintf("otpauth://totp/Amazon%%20Web%%20Services:%s@luther?secret=%s&issuer=Amazon%%20Web%%20Services", userName, seed)
 	qrterminal.GenerateHalfBlock(qrString, qrterminal.L, os.Stdout)
 
@@ -89,9 +96,6 @@ func MFASetup() (err error) {
 		AuthenticationCode1: aws.String(code1),
 		AuthenticationCode2: aws.String(code2),
 	}
-	if _, err := iamService.EnableMFADevice(enableInput); err != nil {
-		return err
-	}
-
-	return nil
+	_, err := iamService.EnableMFADevice(enableInput)
+	return err
 }
