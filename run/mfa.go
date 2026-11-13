@@ -30,8 +30,8 @@ func userName(sess client.ConfigProvider) (string, error) {
 }
 
 // deleteUnusedDevice removes an MFA device that was created but not
-// enabled, so that a failed setup does not leave a device that blocks the
-// next attempt (the device name is the user name).
+// enabled. The device name is the user name, so a device left behind makes
+// the next attempt fail. It does not run if the process is killed (Ctrl-C).
 func deleteUnusedDevice(iamService *iam.IAM, serial string) {
 	fmt.Println("Setup incomplete, deleting unused MFA device.")
 	input := &iam.DeleteVirtualMFADeviceInput{
@@ -39,7 +39,7 @@ func deleteUnusedDevice(iamService *iam.IAM, serial string) {
 	}
 	_, err := iamService.DeleteVirtualMFADevice(input)
 	if err != nil {
-		fmt.Printf("Failed to clean up MFA device.  Manual intervention required.  Error: %v", err)
+		fmt.Printf("Failed to clean up MFA device.  Manual intervention required.  Error: %v\n", err)
 	}
 }
 
@@ -63,14 +63,14 @@ func MFASetup() error {
 	if err != nil {
 		return err
 	}
-	serial := *createResult.VirtualMFADevice.SerialNumber
+	device := createResult.VirtualMFADevice
 
 	// From here on a failure must delete the new device.
-	if err = enroll(iamService, userName, createResult.VirtualMFADevice); err != nil {
-		deleteUnusedDevice(iamService, serial)
-		return err
+	err = enroll(iamService, userName, device)
+	if err != nil {
+		deleteUnusedDevice(iamService, *device.SerialNumber)
 	}
-	return nil
+	return err
 }
 
 // enroll shows the device's QR code, reads two codes and enables the device.

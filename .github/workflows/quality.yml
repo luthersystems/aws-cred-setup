@@ -26,3 +26,5 @@ jobs:
       contents: read
       issues: read # the work marker gate reads each named issue's state
     uses: luthersystems/.github/.github/workflows/quality.yml@v1
+    # No api-break: true. No other repo imports this CLI's Go API, so the
+    # API break gate stays off.
