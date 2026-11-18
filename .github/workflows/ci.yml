@@ -1,0 +1,127 @@
+name: CI
+
+# Build, vet and test the CLI on every pull request, merge group and push to
+# main. The gate job at the end, "CI (all required checks)", is the one check
+# the main ruleset requires from this workflow.
+
+on:
+  # No paths filter: the gate is a required check, so every PR must start a
+  # run. The changes job skips the build and test jobs on docs-only PRs.
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Decides whether the build and test jobs must run (scripts/ci-changes.sh).
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.decide.outputs.code }}
+    steps:
+      # On a pull request this checks out the merge commit. Its first parent
+      # is the base branch tip, so depth 2 is enough for the diff.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Test the decision script and the gate's needs list
+        run: ./scripts/ci-changes-test.sh
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            ./scripts/ci-changes.sh HEAD^1 HEAD | tee -a "$GITHUB_OUTPUT"
+          else
+            ./scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+      # A stale go.sum would let the build pass here and fail for a user
+      # who runs go install, so check it is tidy first.
+      - name: Check go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - run: go build ./...
+
+  # golangci-lint runs in the shared Quality workflow; go vet is cheap and
+  # catches the checks golangci-lint's config may leave out.
+  vet:
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+
+  # The repo has no tests yet, so today this only compiles every package.
+  # It is here so a new test runs, and blocks the merge, without a CI change.
+  test:
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+
+  ci-all:
+    name: CI (all required checks)
+    # always(), so the gate reports on every run. A cancelled or failed job
+    # then fails the gate below. A gate that did not run, or was skipped,
+    # could count as passing for the required check.
+    if: always()
+    needs: [changes, build, vet, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Pass only if the changes job succeeded and every other job succeeded,
+      # or was skipped because the changes job said the PR is docs-only
+      # (code=false). Any other skip fails, so a job skipped by mistake
+      # cannot pass the gate.
+      - name: Fail unless every required job passed
+        if: >-
+          needs.changes.result != 'success'
+          || contains(needs.*.result, 'failure')
+          || contains(needs.*.result, 'cancelled')
+          || (needs.changes.outputs.code != 'false' && contains(needs.*.result, 'skipped'))
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS_JSON"
+          echo "::error::A required CI job failed, was cancelled or was skipped."
+          exit 1
+      - name: Every required job passed or was skipped as docs-only
+        run: echo "ok"
