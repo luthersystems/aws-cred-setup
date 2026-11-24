@@ -81,8 +81,8 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
 
-  # The repo has no tests yet, so today this only compiles every package.
-  # It is here so a new test runs, and blocks the merge, without a CI change.
+  # The tests in run/ use fake IAM and STS clients, so they need no AWS
+  # credentials.
   test:
     needs: changes
     if: needs.changes.outputs.code != 'false'
