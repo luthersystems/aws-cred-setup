@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,11 +17,13 @@ import (
 	"github.com/mdp/qrterminal"
 )
 
-// defaultRegion is used when no region is configured. IAM and STS are
-// global services, so any region reaches them. The v1 SDK worked with no
-// region for these two services; the v2 SDK refuses to resolve an endpoint
-// without one, so this fallback keeps a bare `aws configure` (keys only)
-// working as before.
+// defaultRegion is used when no region is configured. IAM is global, and
+// STS is reached through us-east-1 here (see stsRegion), so in the
+// commercial partition the region does not change which account or user
+// the calls see. The v1 SDK worked with no region for these two services;
+// the v2 SDK refuses to resolve an endpoint without one, so this fallback
+// keeps a bare `aws configure` (keys only) working as before. GovCloud and
+// China users must set AWS_REGION, as they had to with v1.
 const defaultRegion = "us-east-1"
 
 // iamAPI is the part of the IAM client this tool calls. It is an interface
@@ -36,10 +39,35 @@ type stsAPI interface {
 	GetCallerIdentity(ctx context.Context, in *sts.GetCallerIdentityInput, opts ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
 }
 
-// loadConfig reads the default credential chain: environment variables,
-// AWS_PROFILE and the shared config and credentials files.
+// loadConfig reads credentials the way the v1 session did.
+//
+// v1 read ~/.aws/config, AWS_DEFAULT_REGION and AWS_DEFAULT_PROFILE only
+// when AWS_SDK_LOAD_CONFIG was true; v2 always reads them. A profile in
+// ~/.aws/config often assumes a role, and a role has no MFA device to set
+// up, so reading it by default would break users v1 served. So without
+// AWS_SDK_LOAD_CONFIG this loads only the credentials file, AWS_PROFILE
+// and AWS_REGION. One difference stays: v2 reads AWS_DEFAULT_PROFILE when
+// AWS_PROFILE is unset.
 func loadConfig(ctx context.Context) (aws.Config, error) {
-	cfg, err := config.LoadDefaultConfig(ctx)
+	var opts []func(*config.LoadOptions) error
+	if loadShared, _ := strconv.ParseBool(os.Getenv("AWS_SDK_LOAD_CONFIG")); !loadShared {
+		region := os.Getenv("AWS_REGION")
+		if region == "" {
+			region = defaultRegion
+		}
+		opts = append(opts,
+			// A non-nil empty list means "no config file", not the default.
+			config.WithSharedConfigFiles([]string{}),
+			config.WithRegion(region),
+		)
+		// Only pass AWS_PROFILE when it is set: an explicit profile that
+		// is missing from the credentials file is an error, and a user
+		// with keys in the environment and no files must still work.
+		if profile := os.Getenv("AWS_PROFILE"); profile != "" {
+			opts = append(opts, config.WithSharedConfigProfile(profile))
+		}
+	}
+	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return aws.Config{}, err
 	}
@@ -47,6 +75,19 @@ func loadConfig(ctx context.Context) (aws.Config, error) {
 		cfg.Region = defaultRegion
 	}
 	return cfg, nil
+}
+
+// stsRegion picks the region for the STS client. v1 sent STS calls in the
+// commercial regions to the global endpoint, which works even where a
+// regional STS endpoint is turned off or the region is not opted in. v2
+// only uses regional endpoints, so commercial regions use us-east-1, the
+// region of the global endpoint. Other partitions (China, GovCloud, ISO)
+// keep their own region, as v1 did.
+func stsRegion(region string) string {
+	if strings.HasPrefix(region, "cn-") || strings.HasPrefix(region, "us-gov-") || strings.Contains(region, "-iso") {
+		return region
+	}
+	return defaultRegion
 }
 
 func userName(ctx context.Context, stsService stsAPI) (string, error) {
@@ -87,7 +128,7 @@ func MFASetup() error {
 	}
 	s := &setup{
 		iam: iam.NewFromConfig(cfg),
-		sts: sts.NewFromConfig(cfg),
+		sts: sts.NewFromConfig(cfg, func(o *sts.Options) { o.Region = stsRegion(cfg.Region) }),
 		in:  os.Stdin,
 		out: os.Stdout,
 	}
